@@ -268,6 +268,165 @@ def get_or_create_monitor(base: str, channel_id: str):
     return mid
 
 
+def create_monitor(base: str, channel_id: str, name: str, monitor_body: dict):
+    """Create or update a monitor by exact name."""
+    print(f"\n[+] Ensuring monitor '{name}' …")
+    # Search existing
+    search_body = {"query": {"match": {"name": name}}}
+    resp = req("POST", f"{base}/_plugins/_alerting/monitors/_search", search_body, label=f"Search monitor {name}")
+    hits = (resp.get("hits") or {}).get("hits", [])
+    mid = None
+    for h in hits:
+        if h.get("_source", {}).get("name") == name:
+            mid = h["_id"]
+            print(f"    Found existing monitor  id={mid}")
+            break
+    if mid:
+        print(f"    Updating monitor {mid} …")
+        result = req("PUT", f"{base}/_plugins/_alerting/monitors/{mid}", monitor_body, label=f"Update monitor {name}")
+    else:
+        print(f"    Creating monitor {name} …")
+        result = req("POST", f"{base}/_plugins/_alerting/monitors", monitor_body, label=f"Create monitor {name}")
+    if "_error" in result:
+        print(f"FATAL: could not create/update monitor {name}", file=sys.stderr)
+        sys.exit(1)
+    mid = result.get("_id") or mid
+    print(f"    Saved monitor {name}  id={mid}")
+    return mid
+
+
+# Monitor: ssh-bruteforce-then-success
+def build_compromise_monitor(channel_id: str) -> dict:
+    action_message = json.dumps({
+        "monitor_name":  "{{ctx.monitor.name}}",
+        "trigger_name":  "{{ctx.trigger.name}}",
+        "severity":      "{{ctx.trigger.severity}}",
+        "src_ip":        "{{bucket_keys.0}}",
+        "count":         "{{ctx.bucket_keys.0}}",
+        "period_end":    "{{ctx.periodEnd}}",
+    })
+    return {
+        "type": "monitor",
+        "name": "ssh-bruteforce-then-success",
+        "monitor_type": "bucket_level_monitor",
+        "enabled": True,
+        "schedule": {"period": {"interval": 1, "unit": "MINUTES"}},
+        "inputs": [{
+            "search": {
+                "indices": ["security-logs"],
+                "query": {
+                    "size": 0,
+                    "query": {
+                        "bool": {
+                            "filter": [
+                                {"range": {"@timestamp": {"gte": "now-10m", "lte": "now"}}}
+                            ]
+                        }
+                    },
+                    "aggregations": {
+                        "by_ip": {
+                            "composite": {
+                                "sources": [{"src_ip": {"terms": {"field": "src_ip"}}}],
+                                "size": 100
+                            },
+                            "aggregations": {
+                                "failed": {"filter": {"term": {"event_action": "failed_login"}}},
+                                "success": {"filter": {"term": {"event_action": "accepted_login"}}}
+                            }
+                        }
+                    }
+                }
+            }
+        }],
+        "triggers": [{
+            "bucket_level_trigger": {
+                "name": "compromise-threshold",
+                "severity": "1",
+                "condition": {
+                    "buckets_path": {
+                        "failed": "by_ip>failed>_count",
+                        "success": "by_ip>success>_count"
+                    },
+                    "parent_bucket_path": "by_ip",
+                    "script": {
+                        "source": "params.failed > 5 && params.success > 0",
+                        "lang": "painless"
+                    }
+                },
+                "actions": [{
+                    "name": "notify-portal",
+                    "destination_id": channel_id,
+                    "message_template": {"source": action_message},
+                    "throttle_enabled": False
+                }]
+            }
+        }]
+    }
+
+
+# Monitor: ssh-password-spraying
+def build_spray_monitor(channel_id: str) -> dict:
+    action_message = json.dumps({
+        "monitor_name":  "{{ctx.monitor.name}}",
+        "trigger_name":  "{{ctx.trigger.name}}",
+        "severity":      "{{ctx.trigger.severity}}",
+        "src_ip":        "{{bucket_keys.0}}",
+        "count":         "{{ctx.bucket_keys.0}}",
+        "period_end":    "{{ctx.periodEnd}}",
+    })
+    return {
+        "type": "monitor",
+        "name": "ssh-password-spraying",
+        "monitor_type": "bucket_level_monitor",
+        "enabled": True,
+        "schedule": {"period": {"interval": 1, "unit": "MINUTES"}},
+        "inputs": [{
+            "search": {
+                "indices": ["security-logs"],
+                "query": {
+                    "size": 0,
+                    "query": {
+                        "bool": {
+                            "filter": [
+                                {"term": {"event_action": "failed_login"}},
+                                {"range": {"@timestamp": {"gte": "now-10m", "lte": "now"}}}
+                            ]
+                        }
+                    },
+                    "aggregations": {
+                        "by_ip": {
+                            "composite": {
+                                "sources": [{"src_ip": {"terms": {"field": "src_ip"}}}],
+                                "size": 100
+                            },
+                            "aggregations": {
+                                "unique_users": {"cardinality": {"field": "user"}}
+                            }
+                        }
+                    }
+                }
+            }
+        }],
+        "triggers": [{
+            "bucket_level_trigger": {
+                "name": "spray-threshold",
+                "severity": "2",
+                "condition": {
+                    "buckets_path": {"users": "by_ip>unique_users"},
+                    "parent_bucket_path": "by_ip",
+                    "script": {"source": "params.users > 5", "lang": "painless"}
+                },
+                "actions": [{
+                    "name": "notify-portal",
+                    "destination_id": channel_id,
+                    "message_template": {"source": action_message},
+                    "throttle_enabled": False
+                }]
+            }
+        }]
+    }
+
+
 # ─────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────
@@ -300,6 +459,10 @@ def main():
     channel_id = get_or_create_channel(base, webhook_url)
     test_channel(base, channel_id)
     monitor_id = get_or_create_monitor(base, channel_id)
+
+    # Additional monitors
+    create_monitor(base, channel_id, "ssh-bruteforce-then-success", build_compromise_monitor(channel_id))
+    create_monitor(base, channel_id, "ssh-password-spraying", build_spray_monitor(channel_id))
 
     print("\n" + "=" * 60)
     print("  Done!")

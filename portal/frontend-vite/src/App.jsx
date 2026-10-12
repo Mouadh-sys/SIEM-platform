@@ -21,6 +21,12 @@ const STATUS_COLORS = {
   blocked: '#f97316',
 };
 
+const TYPE_COLORS = {
+  bruteforce: '#f97316', // orange
+  compromise: '#ef4444', // red
+  spraying: '#06b6d4', // cyan
+};
+
 function formatTime(iso) {
   if (!iso) return '--';
   return new Date(iso).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' UTC';
@@ -47,6 +53,16 @@ function StatusBadge({ status }) {
   return (
     <span className="px-2 py-0.5 text-xs font-medium rounded capitalize" style={{ backgroundColor: STATUS_COLORS[status] + '20', color: STATUS_COLORS[status] }}>
       {status}
+    </span>
+  );
+}
+
+function IncidentTypeBadge({ type }) {
+  const color = TYPE_COLORS[type] || '#6b7280';
+  const label = type === 'bruteforce' ? 'Brute-force' : type === 'compromise' ? 'Compromise' : type === 'spraying' ? 'Spraying' : type;
+  return (
+    <span className="px-2 py-0.5 text-xs font-medium rounded" style={{ backgroundColor: color + '20', color }}>
+      {label}
     </span>
   );
 }
@@ -242,7 +258,7 @@ function OverviewPage({ stats, incidents, error, onRefresh }) {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         <div className="bg-soc-panel border border-soc-border rounded-xl p-5">
           <div className="flex items-center justify-between">
             <div>
@@ -295,6 +311,20 @@ function OverviewPage({ stats, incidents, error, onRefresh }) {
             <div className="w-12 h-12 rounded-xl bg-soc-accent/20 flex items-center justify-center">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#06b6d4" strokeWidth="2">
                 <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+        <div className="bg-soc-panel border border-soc-border rounded-xl p-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-soc-textMuted">Compromise</p>
+              <p className="text-3xl font-bold text-soc-critical mt-1">{stats.by_type?.compromise || 0}</p>
+            </div>
+            <div className="w-12 h-12 rounded-xl bg-soc-critical/20 flex items-center justify-center">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2">
+                <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
               </svg>
             </div>
           </div>
@@ -380,9 +410,13 @@ function OverviewPage({ stats, incidents, error, onRefresh }) {
 
 function IncidentsPage({ incidents, setIncidents, error, onRefresh }) {
   const [statusFilter, setStatusFilter] = useState('all');
+  const [typeFilter, setTypeFilter] = useState('all');
   const [selectedIncident, setSelectedIncident] = useState(null);
 
-  const filtered = incidents.filter(i => statusFilter === 'all' || i.status === statusFilter);
+  const filtered = incidents.filter(i => 
+    (statusFilter === 'all' || i.status === statusFilter) &&
+    (typeFilter === 'all' || i.incident_type === typeFilter)
+  );
 
   return (
     <div className="space-y-6">
@@ -399,6 +433,16 @@ function IncidentsPage({ incidents, setIncidents, error, onRefresh }) {
             <option value="investigating">Investigating</option>
             <option value="resolved">Resolved</option>
             <option value="blocked">Blocked</option>
+          </select>
+          <select
+            value={typeFilter}
+            onChange={e => setTypeFilter(e.target.value)}
+            className="bg-soc-panel border border-soc-border rounded-lg px-3 py-2 text-sm"
+          >
+            <option value="all">All Types</option>
+            <option value="bruteforce">Brute-force</option>
+            <option value="compromise">Compromise</option>
+            <option value="spraying">Spraying</option>
           </select>
           <button onClick={onRefresh} className="px-4 py-2 bg-soc-accent/20 text-soc-accent rounded-lg hover:bg-soc-accent/30 text-sm font-medium flex items-center gap-2">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -418,6 +462,7 @@ function IncidentsPage({ incidents, setIncidents, error, onRefresh }) {
                 <th className="p-3 font-mono text-xs">ID</th>
                 <th className="p-3 font-mono text-xs">Source IP</th>
                 <th className="p-3 text-xs">Severity</th>
+                <th className="p-3 text-xs">Type</th>
                 <th className="p-3 text-xs">Count</th>
                 <th className="p-3 text-xs">First Seen</th>
                 <th className="p-3 text-xs">Last Seen</th>
@@ -427,13 +472,14 @@ function IncidentsPage({ incidents, setIncidents, error, onRefresh }) {
             </thead>
             <tbody>
               {filtered.length === 0 ? (
-                <tr><td colSpan={8} className="p-8 text-center text-soc-textMuted">No incidents found</td></tr>
+                <tr><td colSpan={9} className="p-8 text-center text-soc-textMuted">No incidents found</td></tr>
               ) : (
                 filtered.map(inc => (
                   <tr key={inc.id} className="border-b border-soc-border/50 hover:bg-soc-bg/50 cursor-pointer" onClick={() => setSelectedIncident(inc)}>
                     <td className="p-3 font-mono text-sm">{inc.id}</td>
                     <td className="p-3 font-mono text-sm">{inc.src_ip}</td>
                     <td className="p-3"><SeverityBadge severity={inc.severity} /></td>
+                    <td className="p-3"><IncidentTypeBadge type={inc.incident_type || 'bruteforce'} /></td>
                     <td className="p-3 font-mono text-sm">{inc.count}</td>
                     <td className="p-3 text-sm text-soc-textMuted">{formatDateTime(inc.first_seen)}</td>
                     <td className="p-3 text-sm text-soc-textMuted">{formatDateTime(inc.last_seen)}</td>

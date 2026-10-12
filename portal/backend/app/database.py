@@ -27,6 +27,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS incidents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             src_ip TEXT NOT NULL,
+            incident_type TEXT NOT NULL DEFAULT 'bruteforce',
             severity INTEGER NOT NULL,
             count INTEGER NOT NULL DEFAULT 1,
             first_seen TEXT NOT NULL,
@@ -74,17 +75,17 @@ def store_raw_webhook(payload: str) -> int:
     return webhook_id
 
 
-def save_or_update_incident(src_ip: str, severity: int, count: int = 1, event_timestamp: Optional[str] = None, raw_payload: Optional[str] = None) -> Dict[str, Any]:
+def save_or_update_incident(src_ip: str, severity: int, count: int = 1, event_timestamp: Optional[str] = None, raw_payload: Optional[str] = None, incident_type: str = "bruteforce") -> Dict[str, Any]:
     conn = get_connection()
     cursor = conn.cursor()
     now = datetime.datetime.now(datetime.timezone.utc)
     now_iso = now.isoformat()
     ts_str = event_timestamp or now_iso
 
-    # Look for existing open incident for this src_ip
+    # Look for existing open incident for this src_ip and incident_type
     cursor.execute(
-        "SELECT * FROM incidents WHERE src_ip = ? ORDER BY last_seen DESC LIMIT 1",
-        (src_ip,)
+        "SELECT * FROM incidents WHERE src_ip = ? AND incident_type = ? ORDER BY last_seen DESC LIMIT 1",
+        (src_ip, incident_type)
     )
     row = cursor.fetchone()
 
@@ -117,10 +118,10 @@ def save_or_update_incident(src_ip: str, severity: int, count: int = 1, event_ti
     # Otherwise, create a new incident
     cursor.execute(
         """
-        INSERT INTO incidents (src_ip, severity, count, first_seen, last_seen, raw_payload, status)
-        VALUES (?, ?, ?, ?, ?, ?, 'open')
+        INSERT INTO incidents (src_ip, incident_type, severity, count, first_seen, last_seen, raw_payload, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'open')
         """,
-        (src_ip, severity, count, ts_str, now_iso, raw_payload)
+        (src_ip, incident_type, severity, count, ts_str, now_iso, raw_payload)
     )
     incident_id = cursor.lastrowid
     conn.commit()
@@ -181,7 +182,7 @@ def get_incident_by_id(incident_id: int) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
-def get_incidents_with_filters(status: Optional[str] = None, severity: Optional[int] = None) -> List[Dict[str, Any]]:
+def get_incidents_with_filters(status: Optional[str] = None, severity: Optional[int] = None, incident_type: Optional[str] = None) -> List[Dict[str, Any]]:
     conn = get_connection()
     cursor = conn.cursor()
     query = "SELECT * FROM incidents WHERE 1=1"
@@ -192,6 +193,9 @@ def get_incidents_with_filters(status: Optional[str] = None, severity: Optional[
     if severity is not None:
         query += " AND severity = ?"
         params.append(severity)
+    if incident_type:
+        query += " AND incident_type = ?"
+        params.append(incident_type)
     query += " ORDER BY last_seen DESC"
     cursor.execute(query, params)
     rows = [dict(r) for r in cursor.fetchall()]

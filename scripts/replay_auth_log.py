@@ -39,7 +39,7 @@ def main():
     parser.add_argument("--file", "-f", default="data/fluent-bit/auth.log", help="Path to destination auth.log")
     parser.add_argument("--count", "-c", type=int, default=15, help="Number of failed attempts to generate")
     parser.add_argument("--attacker-ip", "-a", default=DEFAULT_ATTACKER_IP, help="Attacker IP address")
-    parser.add_argument("--mode", "-m", choices=["brute-force", "benign", "mixed"], default="brute-force", help="Simulation mode")
+    parser.add_argument("--mode", "-m", choices=["brute-force", "benign", "mixed", "compromise", "spray"], default="brute-force", help="Simulation mode")
     parser.add_argument("--delay", "-d", type=float, default=0.1, help="Delay between log lines in seconds")
     args = parser.parse_args()
 
@@ -51,7 +51,6 @@ def main():
         if args.mode in ["benign", "mixed"]:
             for _ in range(3):
                 pid += 1
-                # Use UTC time so Fluent Bit's @timestamp matches `date -u`
                 now_utc = datetime.datetime.now(datetime.timezone.utc)
                 line = make_accepted_line(now_utc, random.choice(BENIGN_IPS), "admin", random.randint(40000, 60000), pid)
                 f.write(line)
@@ -72,7 +71,6 @@ def main():
                 time.sleep(args.delay)
 
         if args.mode == "mixed":
-            # Secondary attacker IP for multi-source correlation
             for i in range(2):
                 pid += 1
                 now_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -81,6 +79,43 @@ def main():
                 f.flush()
                 print(f"[SECONDARY] {line.strip()}")
                 time.sleep(args.delay)
+
+        if args.mode == "compromise":
+            # 8 failed attempts (mix of invalid and valid users)
+            for i in range(8):
+                pid += 1
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                user = USERS[i % len(USERS)]
+                port = random.randint(35000, 62000)
+                line = make_failed_line(now_utc, args.attacker_ip, user, port, pid)
+                f.write(line)
+                f.flush()
+                print(f"[COMPROMISE FAIL {i+1}/8] {line.strip()}")
+                time.sleep(args.delay)
+            # one successful login for admin
+            pid += 1
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            port = random.randint(35000, 62000)
+            line = make_accepted_line(now_utc, args.attacker_ip, "admin", port, pid)
+            f.write(line)
+            f.flush()
+            print(f"[COMPROMISE SUCCESS] {line.strip()}")
+            time.sleep(args.delay)
+
+        if args.mode == "spray":
+            # 1-2 failed attempts each against 10 different usernames
+            spray_users = ["root","admin","user","test","guest","ubuntu","postgres","oracle","deploy","ansible"]
+            for user in spray_users:
+                attempts = random.randint(1,2)
+                for a in range(attempts):
+                    pid += 1
+                    now_utc = datetime.datetime.now(datetime.timezone.utc)
+                    port = random.randint(35000, 62000)
+                    line = make_failed_line(now_utc, args.attacker_ip, user, port, pid)
+                    f.write(line)
+                    f.flush()
+                    print(f"[SPRAY {user} attempt {a+1}/{attempts}] {line.strip()}")
+                    time.sleep(args.delay)
 
     print(f"[✓] Finished generating logs in {args.file}")
 

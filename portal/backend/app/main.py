@@ -23,6 +23,10 @@ from app.database import (
 
 OPENSEARCH_URL = "http://opensearch:9200"
 
+# Internal client for OpenSearch (no CORS issues)
+opensearch_client = urllib.request.OpenerDirector()
+opensearch_client.add_handler(urllib.request.HTTPHandler())
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("portal-backend")
 
@@ -111,6 +115,14 @@ async def receive_opensearch_webhook(request: Request):
     except Exception as e:
         logger.warning("Could not parse payload as standard JSON: %s", e)
 
+    # Determine incident_type from monitor name
+    incident_type_map = {
+        "ssh-bruteforce-by-ip": "bruteforce",
+        "ssh-bruteforce-then-success": "compromise",
+        "ssh-password-spraying": "spraying",
+    }
+    incident_type = incident_type_map.get(monitor_name, "bruteforce")
+
     incidents_created = []
     
     if monitor_name and trigger_name:
@@ -130,14 +142,16 @@ async def receive_opensearch_webhook(request: Request):
                     count=count,
                     event_timestamp=event_timestamp,
                     raw_payload=raw_text,
+                    incident_type=incident_type,
                 )
                 incidents_created.append(incident)
                 logger.info(
-                    "Incident recorded: ID=%s, src_ip=%s, severity=%s, count=%s",
+                    "Incident recorded: ID=%s, src_ip=%s, severity=%s, count=%s, type=%s",
                     incident["id"],
                     incident["src_ip"],
                     incident["severity"],
                     incident["count"],
+                    incident.get("incident_type"),
                 )
         else:
             src_ip = None
@@ -170,14 +184,16 @@ async def receive_opensearch_webhook(request: Request):
                 count=count,
                 event_timestamp=event_timestamp,
                 raw_payload=raw_text,
+                incident_type=incident_type,
             )
             incidents_created.append(incident)
             logger.info(
-                "Incident recorded (fallback): ID=%s, src_ip=%s, severity=%s, count=%s",
+                "Incident recorded (fallback): ID=%s, src_ip=%s, severity=%s, count=%s, type=%s",
                 incident["id"],
                 incident["src_ip"],
                 incident["severity"],
                 incident["count"],
+                incident.get("incident_type"),
             )
     else:
         src_ip = "unknown"
@@ -187,6 +203,7 @@ async def receive_opensearch_webhook(request: Request):
             count=1,
             event_timestamp=event_timestamp,
             raw_payload=raw_text,
+            incident_type=incident_type,
         )
         incidents_created.append(incident)
 
@@ -206,8 +223,9 @@ async def receive_opensearch_webhook(request: Request):
 def list_incidents(
     status: Optional[str] = Query(None, description="Filter by status"),
     severity: Optional[int] = Query(None, description="Filter by severity"),
+    incident_type: Optional[str] = Query(None, description="Filter by incident type"),
 ):
-    incidents = get_incidents_with_filters(status=status, severity=severity)
+    incidents = get_incidents_with_filters(status=status, severity=severity, incident_type=incident_type)
     return {"total": len(incidents), "incidents": incidents}
 
 
@@ -301,6 +319,52 @@ def get_incident_timeline(incident_id: int, limit: int = Query(50, ge=1, le=200)
 # Stats endpoint
 # ─────────────────────────────────────────────
 
+@app.get("/api/opensearch/{path:path}")
+async def proxy_opensearch(path: str, request: Request):
+    """Proxy OpenSearch requests to avoid CORS issues."""
+    # Build the target URL
+    query_string = str(request.url.query)
+    target_url = f"{OPENSEARCH_URL}/{path}"
+    if query_string:
+        target_url += f"?{query_string}"
+    
+    # Forward the request
+    body = await request.body()
+    headers = dict(request.headers)
+    # Remove host header to avoid conflicts
+    headers.pop("host", None)
+    
+    req_obj = urllib.request.Request(
+        target_url,
+        data=body if body else None,
+        headers=headers,
+        method=request.method
+    )
+    
+    try:
+        with urllib.request.urlopen(req_obj, timeout=30) as resp:
+            resp_body = resp.read()
+            resp_headers = dict(resp.headers)
+            # Filter out hop-by-hop headers
+            filtered_headers = {k: v for k, v in resp_headers.items() 
+                              if k.lower() not in ('content-encoding', 'transfer-encoding', 'connection')}
+            return Response(
+                content=resp_body,
+                status_code=resp.status,
+                headers=filtered_headers,
+                media_type=resp_headers.get("content-type", "application/json")
+            )
+    except urllib.error.HTTPError as e:
+        return Response(
+            content=e.read(),
+            status_code=e.code,
+            media_type="application/json"
+        )
+    except Exception as e:
+        logger.error("OpenSearch proxy error: %s", e)
+        raise HTTPException(status_code=502, detail=f"OpenSearch proxy error: {e}")
+
+
 @app.get("/stats")
 def get_stats():
     """Get dashboard stats: counts by severity/status, top attackers, events per minute."""
@@ -318,6 +382,12 @@ def get_stats():
         for inc in incidents:
             st = inc.get("status", "open")
             by_status[st] = by_status.get(st, 0) + 1
+        
+        # By incident type
+        by_type = {}
+        for inc in incidents:
+            it = inc.get("incident_type", "bruteforce")
+            by_type[it] = by_type.get(it, 0) + 1
         
         # Top attacker IPs
         ip_counts = {}
@@ -368,6 +438,7 @@ def get_stats():
         return {
             "by_severity": by_severity,
             "by_status": by_status,
+            "by_type": by_type,
             "top_attackers": [{"ip": ip, "count": cnt} for ip, cnt in top_attackers],
             "events_per_minute": events_per_minute,
             "total_incidents": len(incidents),
