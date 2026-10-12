@@ -132,7 +132,7 @@ def get_or_create_monitor(base: str, channel_id: str):
 
     search_body = {
         "query": {
-            "term": {"monitor.name": MONITOR_NAME}
+            "match": {"name": MONITOR_NAME}
         }
     }
     resp = req(
@@ -142,20 +142,21 @@ def get_or_create_monitor(base: str, channel_id: str):
         label="Search monitors",
     )
     hits = (resp.get("hits") or {}).get("hits", [])
-    if hits:
-        mid = hits[0]["_id"]
-        print(f"    Found existing monitor  id={mid}")
-        return mid
+    mid = None
+    for h in hits:
+        if h.get("_source", {}).get("name") == MONITOR_NAME:
+            mid = h["_id"]
+            print(f"    Found existing monitor  id={mid}")
+            break
 
-    print(f"    Creating bucket-level monitor …")
-
-    # Action message – valid JSON in Mustache template
+    # Action message – valid JSON in Mustache template for bucket-level monitor
+    # Try accessing bucket_keys array directly
     action_message = json.dumps({
         "monitor_name":  "{{ctx.monitor.name}}",
         "trigger_name":  "{{ctx.trigger.name}}",
         "severity":      "{{ctx.trigger.severity}}",
-        "src_ip":        "{{ctx.results.0.aggregations.composite_agg.buckets.0.key.src_ip}}",
-        "count":         "{{ctx.results.0.aggregations.composite_agg.buckets.0.doc_count}}",
+        "src_ip":        "{{bucket_keys.0}}",
+        "count":         "{{ctx.bucket_keys.0}}",
         "period_end":    "{{ctx.periodEnd}}",
     })
 
@@ -241,18 +242,29 @@ def get_or_create_monitor(base: str, channel_id: str):
         ]
     }
 
-    result = req(
-        "POST",
-        f"{base}/_plugins/_alerting/monitors",
-        monitor_body,
-        label="Create monitor",
-    )
+    if mid:
+        print(f"    Updating monitor {mid} …")
+        result = req(
+            "PUT",
+            f"{base}/_plugins/_alerting/monitors/{mid}",
+            monitor_body,
+            label="Update monitor",
+        )
+    else:
+        print(f"    Creating bucket-level monitor …")
+        result = req(
+            "POST",
+            f"{base}/_plugins/_alerting/monitors",
+            monitor_body,
+            label="Create monitor",
+        )
+
     if "_error" in result:
-        print("FATAL: could not create monitor", file=sys.stderr)
+        print("FATAL: could not create/update monitor", file=sys.stderr)
         sys.exit(1)
 
-    mid = result.get("_id")
-    print(f"    Created monitor  id={mid}")
+    mid = result.get("_id") or mid
+    print(f"    Saved monitor  id={mid}")
     return mid
 
 

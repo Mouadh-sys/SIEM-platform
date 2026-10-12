@@ -1,9 +1,10 @@
 import json
 import logging
 import re
+import urllib.request
 from fastapi import FastAPI, Request, Response, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from app.database import (
     init_db,
@@ -14,6 +15,8 @@ from app.database import (
     update_incident_status,
     get_incident_by_id,
 )
+
+OPENSEARCH_URL = "http://opensearch:9200"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("portal-backend")
@@ -43,6 +46,29 @@ def health_check():
 # ─────────────────────────────────────────────
 # Webhook receiver (OpenSearch → portal)
 # ─────────────────────────────────────────────
+
+def fetch_alert_details(monitor_name: str, trigger_name: str) -> Optional[Dict[str, Any]]:
+    """Fetch the latest alert for a monitor/trigger from OpenSearch to get bucket keys."""
+    try:
+        url = f"{OPENSEARCH_URL}/_plugins/_alerting/monitors/alerts?size=1"
+        req_obj = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req_obj, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+            alerts = data.get("alerts", [])
+            for alert in alerts:
+                if alert.get("monitor_name") == monitor_name and alert.get("trigger_name") == trigger_name:
+                    agg_content = alert.get("agg_alert_content", {})
+                    bucket = agg_content.get("bucket", {})
+                    bucket_keys = agg_content.get("bucket_keys", [])
+                    return {
+                        "src_ip": bucket_keys[0] if bucket_keys else None,
+                        "count": bucket.get("doc_count"),
+                        "bucket_key": bucket.get("key", {}).get("src_ip"),
+                    }
+    except Exception as e:
+        logger.warning("Failed to fetch alert details from OpenSearch: %s", e)
+    return None
+
 
 @app.post("/webhook/opensearch")
 async def receive_opensearch_webhook(request: Request):
@@ -85,11 +111,24 @@ async def receive_opensearch_webhook(request: Request):
                 elif isinstance(bkeys, str):
                     src_ip = bkeys
 
-            severity = int(data.get("severity", 1))
-            count = int(data.get("count", 1))
+            severity = int(data.get("severity", 1)) if data.get("severity") else 1
+            count_val = data.get("count")
+            count = int(count_val) if count_val not in (None, "") else 1
             event_timestamp = (
                 data.get("timestamp") or data.get("period_end") or data.get("alert_time")
             )
+
+            # If src_ip still not found, try fetching from OpenSearch alerts
+            if not src_ip or src_ip == "unknown":
+                monitor_name = data.get("monitor_name")
+                trigger_name = data.get("trigger_name")
+                if monitor_name and trigger_name:
+                    alert_details = fetch_alert_details(monitor_name, trigger_name)
+                    if alert_details:
+                        src_ip = alert_details.get("src_ip") or alert_details.get("bucket_key")
+                        if alert_details.get("count"):
+                            count = alert_details["count"]
+
     except Exception as e:
         logger.warning("Could not parse payload as standard JSON: %s", e)
 
