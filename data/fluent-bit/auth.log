@@ -3,3 +3,44 @@ Random non-syslog line that should not crash parser
 Oct 12 02:17:35 siem-bastion sshd[12001]: Failed password for invalid user root from 203.0.113.42 port 58646 ssh2
 Oct 12 02:17:35 siem-bastion sshd[12002]: Failed password for invalid user admin from 203.0.113.42 port 59727 ssh2
 Oct 12 02:17:35 siem-bastion sshd[12003]: Failed password for invalid user ubuntu from 203.0.113.42 port 52611 ssh2
+Oct 12 07:21:09 siem-bastion sshd[12001]: Accepted password for admin from 10.0.0.22 port 44596 ssh2
+Oct 12 07:21:09 siem-bastion sshd[12002]: Accepted password for admin from 10.0.0.15 port 50046 ssh2
+Oct 12 07:21:09 siem-bastion sshd[12003]: Accepted password for admin from 10.0.0.22 port 48174 ssh2
+Oct 12 07:21:09 siem-bastion sshd[12004]: Failed password for invalid user root from 203.0.113.42 port 60606 ssh2
+Oct 12 07:21:09 siem-bastion sshd[12005]: Failed password for invalid user admin from 203.0.113.42 port 40632 ssh2
+Oct 12 07:21:09 siem-bastion sshd[12006]: Failed password for invalid user ubuntu from 203.0.113.42 port 61943 ssh2
+Oct 12 07:21:09 siem-bastion sshd[12007]: Failed password for invalid user test from 203.0.113.42 port 61204 ssh2
+Oct 12 07:21:09 siem-bastion sshd[12008]: Failed password for invalid user postgres from 203.0.113.42 port 49621 ssh2
+Oct 12 07:21:09 siem-bastion sshd[12009]: Failed password for invalid user deploy from 203.0.113.42 port 42135 ssh2
+Oct 12 07:21:10 siem-bastion sshd[12010]: Failed password for invalid user guest from 203.0.113.42 port 50938 ssh2
+Oct 12 07:21:10 siem-bastion sshd[12011]: Failed password for invalid user oracle from 203.0.113.42 port 61983 ssh2
+Oct 12 07:21:10 siem-bastion sshd[12012]: Failed password for invalid user user from 203.0.113.42 port 37305 ssh2
+Oct 12 07:21:10 siem-bastion sshd[12013]: Failed password for invalid user ansible from 203.0.113.42 port 41652 ssh2
+Oct 12 07:21:10 siem-bastion sshd[12014]: Failed password for invalid user root from 203.0.113.42 port 44279 ssh2
+Oct 12 07:21:10 siem-bastion sshd[12015]: Failed password for invalid user admin from 203.0.113.42 port 42523 ssh2
+Oct 12 07:21:10 siem-bastion sshd[12016]: Failed password for invalid user ubuntu from 203.0.113.42 port 38749 ssh2
+Oct 12 07:21:10 siem-bastion sshd[12017]: Failed password for invalid user test from 203.0.113.42 port 40998 ssh2
+Oct 12 07:21:10 siem-bastion sshd[12018]: Failed password for invalid user postgres from 203.0.113.42 port 57476 ssh2
+Oct 12 07:21:11 siem-bastion sshd[12019]: Failed password for invalid user root from 198.51.100.77 port 56819 ssh2
+Oct 12 07:21:11 siem-bastion sshd[12020]: Failed password for invalid user root from 198.51.100.77 port 58101 ssh2
+Oct 12 07:23:43 siem-bastion sshd[12001]: Failed password for invalid user root from 203.0.113.42 port 36310 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12001]: Failed password for invalid user root from 203.0.113.42 port 51565 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12002]: Failed password for invalid user admin from 203.0.113.42 port 52500 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12003]: Failed password for invalid user ubuntu from 203.0.113.42 port 43351 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12004]: Failed password for invalid user test from 203.0.113.42 port 56600 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12005]: Failed password for invalid user postgres from 203.0.113.42 port 36912 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12006]: Failed password for invalid user deploy from 203.0.113.42 port 48145 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12007]: Failed password for invalid user guest from 203.0.113.42 port 58924 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12008]: Failed password for invalid user oracle from 203.0.113.42 port 42628 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12009]: Failed password for invalid user user from 203.0.113.42 port 56556 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12010]: Failed password for invalid user ansible from 203.0.113.42 port 52862 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12011]: Failed password for invalid user root from 203.0.113.42 port 51060 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12012]: Failed password for invalid user admin from 203.0.113.42 port 38153 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12013]: Failed password for invalid user ubuntu from 203.0.113.42 port 47995 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12014]: Failed password for invalid user test from 203.0.113.42 port 61598 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12015]: Failed password for invalid user postgres from 203.0.113.42 port 41265 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12016]: Failed password for invalid user deploy from 203.0.113.42 port 57857 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12017]: Failed password for invalid user guest from 203.0.113.42 port 46725 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12018]: Failed password for invalid user oracle from 203.0.113.42 port 60281 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12019]: Failed password for invalid user user from 203.0.113.42 port 46202 ssh2
+Oct 12 07:56:16 siem-bastion sshd[12020]: Failed password for invalid user ansible from 203.0.113.42 port 40820 ssh2

@@ -1,19 +1,38 @@
 -- normalize.lua
 -- Called by Fluent Bit lua filter after the multi-parser filter.
 -- Fixes:
---   1. Keeps original syslog line in `message`
+--   1. Keeps original raw syslog line in `message` for every event
 --   2. Casts port to integer
 --   3. Sets event_action from raw_event
 --   4. Marks lines that did not match any parser as parse_failed=true
+--   5. Generates SHA-256 doc_id from raw message for deduplication
+
+local ffi = require("ffi")
+ffi.cdef[[
+    unsigned char *SHA256(const unsigned char *d, size_t n, unsigned char *md);
+]]
+
+local function hash_sha256(str)
+    if not str or str == "" then return "" end
+    local md = ffi.new("unsigned char[32]")
+    ffi.C.SHA256(str, #str, md)
+    local hex = {}
+    for i = 0, 31 do
+        hex[#hex + 1] = string.format("%02x", md[i])
+    end
+    return table.concat(hex)
+end
 
 function process_auth(tag, timestamp, record)
-    -- The input `message` field contains the raw syslog line (set via Key in [INPUT])
-    -- Preserve it as-is so every event has the original log line.
+    -- Compute deterministic doc_id from the raw message so replays don't duplicate
+    if record["message"] ~= nil and record["message"] ~= "" then
+        record["doc_id"] = hash_sha256(record["message"])
+    end
 
     if record["src_ip"] == nil or record["src_ip"] == "" then
-        -- Unparsed line: mark it but forward untouched
+        -- Unparsed line: mark it but forward untouched with original message
         record["parse_failed"] = true
-        record["event_action"]  = "unknown"
+        record["event_action"] = "unknown"
         return 1, timestamp, record
     end
 
@@ -21,7 +40,7 @@ function process_auth(tag, timestamp, record)
 
     -- Cast port from string to integer
     if record["port"] ~= nil then
-        record["port"] = tonumber(record["port"])
+        record["port"] = math.floor(tonumber(record["port"]))
     end
 
     -- Map raw_event -> event_action
@@ -38,22 +57,6 @@ function process_auth(tag, timestamp, record)
 
     -- Drop the temporary extraction field
     record["raw_event"] = nil
-
-    -- Reconstruct `message` from structured fields if it was overwritten
-    -- (Fluent Bit parser with Reserve_Data keeps original, but make it explicit)
-    if record["message"] == nil or record["message"] == "" then
-        local ts    = record["timestamp"] or ""
-        local host  = record["host"]    or ""
-        local proc  = record["process"] or "sshd"
-        local pid   = record["pid"]     or ""
-        local user  = record["user"]    or ""
-        local ip    = record["src_ip"]  or ""
-        local port  = record["port"]    or ""
-        record["message"] = string.format(
-            "%s %s %s[%s]: %s from %s port %s",
-            ts, host, proc, pid, record["event_action"], ip, tostring(port)
-        )
-    end
 
     return 1, timestamp, record
 end

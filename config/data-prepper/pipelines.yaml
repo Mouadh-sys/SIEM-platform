@@ -5,22 +5,16 @@ security-pipeline:
     kafka:
       bootstrap_servers:
         - "kafka:29092"
+      encryption:
+        type: "none"
       topics:
         - name: "security-logs"
           group_id: "data-prepper"
           serde_format: "json"
           auto_offset_reset: "earliest"
-  processor:
-    - fingerprint:
-        source_fields:
-          - "src_ip"
-          - "user"
-          - "port"
-          - "@timestamp"
-        target_metadata_key: "doc_id"
   sink:
     - opensearch:
         hosts: ["http://opensearch:9200"]
         index: "security-logs"
         insecure: true
-        document_id: "${getMetadata(\"doc_id\")}"
+        document_id: "${/doc_id}"

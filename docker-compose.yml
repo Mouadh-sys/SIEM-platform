@@ -107,11 +107,48 @@ services:
       kafka:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:4900/list || exit 1"]
+      test: ["CMD-SHELL", "curl -sf -k -u admin:admin https://localhost:4900/list || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 20
       start_period: 30s
+
+  portal-backend:
+    image: siem-portal-backend:latest
+    container_name: siem-portal-backend
+    volumes:
+      - ./portal/backend/app:/app/app
+      - portal-data:/app/data
+    ports:
+      - "${FASTAPI_PORT}:8000"
+    networks:
+      - siem-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  portal-frontend:
+    build:
+      context: ./portal/frontend
+      dockerfile: Dockerfile
+    image: siem-portal-frontend:latest
+    container_name: siem-portal-frontend
+    ports:
+      - "${FRONTEND_PORT}:80"
+    networks:
+      - siem-net
+    depends_on:
+      portal-backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/ | grep -q SIEM || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
 networks:
   siem-net:
@@ -120,3 +157,5 @@ networks:
 volumes:
   opensearch-data:
   kafka-data:
+  portal-data:
+

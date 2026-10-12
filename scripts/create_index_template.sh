@@ -38,6 +38,7 @@ curl -sf -X PUT "${OPENSEARCH_URL}/_index_template/${TEMPLATE_NAME}" \
         "port":          { "type": "integer" },
         "parse_failed":  { "type": "boolean" },
         "message":       { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 512 } } },
+        "doc_id":        { "type": "keyword" },
         "log_type":      { "type": "keyword" }
       }
     }
