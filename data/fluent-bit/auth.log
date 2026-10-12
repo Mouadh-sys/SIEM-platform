@@ -1,0 +1,5 @@
+Oct 12 03:10:32 siem-bastion sshd[12001]: Failed password for invalid user root from 203.0.113.42 port 43610 ssh2
+Random non-syslog line that should not crash parser
+Oct 12 02:17:35 siem-bastion sshd[12001]: Failed password for invalid user root from 203.0.113.42 port 58646 ssh2
+Oct 12 02:17:35 siem-bastion sshd[12002]: Failed password for invalid user admin from 203.0.113.42 port 59727 ssh2
+Oct 12 02:17:35 siem-bastion sshd[12003]: Failed password for invalid user ubuntu from 203.0.113.42 port 52611 ssh2
