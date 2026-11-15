@@ -65,6 +65,68 @@ def wait_opensearch(base: str, retries: int = 20, delay: float = 3.0):
 # Step 1 – Notification channel
 # ─────────────────────────────────────────────
 
+def find_monitor_ids(base: str, name: str) -> list[str]:
+    """Return every monitor ID with the given name.
+
+    Notice: the Alerting API flattens monitor documents, while the underlying
+    index stores the name under ``monitor.name``. Searching the top-level
+    ``name`` field returns no hits, so match on the client side instead.
+    """
+    resp = req(
+        "POST",
+        f"{base}/_plugins/_alerting/monitors/_search",
+        {"query": {"match_all": {}}, "size": 1000},
+        label=f"Search monitors for {name}",
+    )
+    hits = (resp.get("hits") or {}).get("hits", [])
+    ids = []
+    for hit in hits:
+        source = hit.get("_source", {})
+        actual_name = source.get("name") or (source.get("monitor") or {}).get("name")
+        if actual_name == name:
+            ids.append(hit["_id"])
+    return ids
+
+
+def dedupe_monitors(base: str, name: str) -> str | None:
+    """Delete duplicate monitors with the same name and return the survivor."""
+    ids = find_monitor_ids(base, name)
+    if not ids:
+        return None
+
+    keep = ids[0]
+    for duplicate in ids[1:]:
+        req(
+            "DELETE",
+            f"{base}/_plugins/_alerting/monitors/{duplicate}",
+            label=f"Delete duplicate monitor {duplicate}",
+        )
+    if len(ids) > 1:
+        print(f"    Removed {len(ids) - 1} duplicate monitor(s), keeping {keep}")
+    return keep
+
+
+def action_message_template() -> str:
+    """Build the notification body for a bucket-level monitor.
+
+    ``bucket_keys`` only exists inside ``ctx.newAlerts`` / ``ctx.dedupedAlerts``
+    for bucket-level monitors. Joining with ``|`` lets the backend split the
+    values even when one notification covers several buckets.
+    """
+    bucket_keys = (
+        "{{#ctx.newAlerts}}{{{bucket_keys}}}|{{/ctx.newAlerts}}"
+        "{{#ctx.dedupedAlerts}}{{{bucket_keys}}}|{{/ctx.dedupedAlerts}}"
+    )
+    return json.dumps({
+        "monitor_name": "{{ctx.monitor.name}}",
+        "trigger_name": "{{ctx.trigger.name}}",
+        "severity": "{{ctx.trigger.severity}}",
+        "bucket_keys": bucket_keys,
+        "src_ip": bucket_keys,
+        "period_end": "{{ctx.periodEnd}}",
+    })
+
+
 CHANNEL_NAME = "siem-portal-webhook"
 
 def get_or_create_channel(base: str, webhook_url: str) -> str:
@@ -130,35 +192,10 @@ MONITOR_NAME = "ssh-bruteforce-by-ip"
 def get_or_create_monitor(base: str, channel_id: str):
     print(f"\n[3] Checking for existing monitor '{MONITOR_NAME}' …")
 
-    search_body = {
-        "query": {
-            "match": {"name": MONITOR_NAME}
-        }
-    }
-    resp = req(
-        "POST",
-        f"{base}/_plugins/_alerting/monitors/_search",
-        search_body,
-        label="Search monitors",
-    )
-    hits = (resp.get("hits") or {}).get("hits", [])
-    mid = None
-    for h in hits:
-        if h.get("_source", {}).get("name") == MONITOR_NAME:
-            mid = h["_id"]
-            print(f"    Found existing monitor  id={mid}")
-            break
-
-    # Action message – valid JSON in Mustache template for bucket-level monitor
-    # Try accessing bucket_keys array directly
-    action_message = json.dumps({
-        "monitor_name":  "{{ctx.monitor.name}}",
-        "trigger_name":  "{{ctx.trigger.name}}",
-        "severity":      "{{ctx.trigger.severity}}",
-        "src_ip":        "{{bucket_keys.0}}",
-        "count":         "{{ctx.bucket_keys.0}}",
-        "period_end":    "{{ctx.periodEnd}}",
-    })
+    mid = dedupe_monitors(base, MONITOR_NAME)
+    if mid:
+        print(f"    Found existing monitor  id={mid}")
+    action_message = action_message_template()
 
     monitor_body = {
         "type": "monitor",
@@ -271,16 +308,9 @@ def get_or_create_monitor(base: str, channel_id: str):
 def create_monitor(base: str, channel_id: str, name: str, monitor_body: dict):
     """Create or update a monitor by exact name."""
     print(f"\n[+] Ensuring monitor '{name}' …")
-    # Search existing
-    search_body = {"query": {"match": {"name": name}}}
-    resp = req("POST", f"{base}/_plugins/_alerting/monitors/_search", search_body, label=f"Search monitor {name}")
-    hits = (resp.get("hits") or {}).get("hits", [])
-    mid = None
-    for h in hits:
-        if h.get("_source", {}).get("name") == name:
-            mid = h["_id"]
-            print(f"    Found existing monitor  id={mid}")
-            break
+    mid = dedupe_monitors(base, name)
+    if mid:
+        print(f"    Found existing monitor  id={mid}")
     if mid:
         print(f"    Updating monitor {mid} …")
         result = req("PUT", f"{base}/_plugins/_alerting/monitors/{mid}", monitor_body, label=f"Update monitor {name}")
@@ -297,14 +327,7 @@ def create_monitor(base: str, channel_id: str, name: str, monitor_body: dict):
 
 # Monitor: ssh-bruteforce-then-success
 def build_compromise_monitor(channel_id: str) -> dict:
-    action_message = json.dumps({
-        "monitor_name":  "{{ctx.monitor.name}}",
-        "trigger_name":  "{{ctx.trigger.name}}",
-        "severity":      "{{ctx.trigger.severity}}",
-        "src_ip":        "{{bucket_keys.0}}",
-        "count":         "{{ctx.bucket_keys.0}}",
-        "period_end":    "{{ctx.periodEnd}}",
-    })
+    action_message = action_message_template()
     return {
         "type": "monitor",
         "name": "ssh-bruteforce-then-success",
@@ -344,8 +367,8 @@ def build_compromise_monitor(channel_id: str) -> dict:
                 "severity": "1",
                 "condition": {
                     "buckets_path": {
-                        "failed": "by_ip>failed>_count",
-                        "success": "by_ip>success>_count"
+                        "failed": "failed._count",
+                        "success": "success._count"
                     },
                     "parent_bucket_path": "by_ip",
                     "script": {
@@ -366,14 +389,7 @@ def build_compromise_monitor(channel_id: str) -> dict:
 
 # Monitor: ssh-password-spraying
 def build_spray_monitor(channel_id: str) -> dict:
-    action_message = json.dumps({
-        "monitor_name":  "{{ctx.monitor.name}}",
-        "trigger_name":  "{{ctx.trigger.name}}",
-        "severity":      "{{ctx.trigger.severity}}",
-        "src_ip":        "{{bucket_keys.0}}",
-        "count":         "{{ctx.bucket_keys.0}}",
-        "period_end":    "{{ctx.periodEnd}}",
-    })
+    action_message = action_message_template()
     return {
         "type": "monitor",
         "name": "ssh-password-spraying",
@@ -412,7 +428,7 @@ def build_spray_monitor(channel_id: str) -> dict:
                 "name": "spray-threshold",
                 "severity": "2",
                 "condition": {
-                    "buckets_path": {"users": "by_ip>unique_users"},
+                    "buckets_path": {"users": "unique_users"},
                     "parent_bucket_path": "by_ip",
                     "script": {"source": "params.users > 5", "lang": "painless"}
                 },

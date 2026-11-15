@@ -56,6 +56,32 @@ def health_check():
 # Webhook receiver (OpenSearch → portal)
 # ─────────────────────────────────────────────
 
+def parse_bucket_keys(value: Any) -> List[str]:
+    """Normalise bucket keys from a webhook or alert document into IP strings."""
+    if value is None:
+        return []
+
+    if isinstance(value, str):
+        parts = re.split(r"[|,\n;]+", value)
+    elif isinstance(value, dict):
+        parts = []
+        for item in value.values():
+            parts.extend(parse_bucket_keys(item))
+    elif isinstance(value, (list, tuple, set)):
+        parts = []
+        for item in value:
+            parts.extend(parse_bucket_keys(item))
+    else:
+        parts = [str(value)]
+
+    keys = []
+    for part in parts:
+        key = str(part).strip().strip("[]")
+        if key and key.lower() not in {"unknown", "none", "null"} and key not in keys:
+            keys.append(key)
+    return keys
+
+
 def fetch_all_active_alert_buckets(monitor_name: str, trigger_name: str) -> List[Dict[str, Any]]:
     """Fetch ALL active alerts for a monitor/trigger from OpenSearch to get all bucket keys."""
     buckets = []
@@ -66,19 +92,30 @@ def fetch_all_active_alert_buckets(monitor_name: str, trigger_name: str) -> List
             data = json.loads(resp.read().decode())
             alerts = data.get("alerts", [])
             for alert in alerts:
-                if (alert.get("monitor_name") == monitor_name and 
+                if (alert.get("monitor_name") == monitor_name and
                     alert.get("trigger_name") == trigger_name and
                     alert.get("state") == "ACTIVE"):
-                    agg_content = alert.get("agg_alert_content", {})
-                    bucket = agg_content.get("bucket", {})
-                    bucket_keys = agg_content.get("bucket_keys", [])
-                    if bucket_keys:
-                        for bk in bucket_keys:
-                            buckets.append({
-                                "src_ip": bk,
-                                "count": bucket.get("doc_count"),
-                                "bucket_key": bucket.get("key", {}).get("src_ip"),
-                            })
+                    agg_content = alert.get("agg_alert_content") or {}
+                    bucket = agg_content.get("bucket") or {}
+
+                    keys = parse_bucket_keys(agg_content.get("bucket_keys"))
+                    if not keys:
+                        keys = parse_bucket_keys(alert.get("bucket_keys"))
+                    if not keys and isinstance(bucket, dict):
+                        keys = parse_bucket_keys(bucket.get("key"))
+
+                    count = bucket.get("doc_count") if isinstance(bucket, dict) else None
+                    existing = {b["src_ip"]: b for b in buckets}
+                    for key in keys:
+                        if key in existing:
+                            if count is not None:
+                                existing[key]["count"] = max(
+                                    existing[key].get("count") or 0, count
+                                )
+                        else:
+                            entry = {"src_ip": key, "count": count}
+                            buckets.append(entry)
+                            existing[key] = entry
     except Exception as e:
         logger.warning("Failed to fetch alert details from OpenSearch: %s", e)
     return buckets
@@ -102,6 +139,8 @@ async def receive_opensearch_webhook(request: Request):
     trigger_name = None
     severity = 1
     event_timestamp = None
+    payload_ips: List[str] = []
+    payload_count = 1
 
     try:
         data = json.loads(raw_text)
@@ -112,6 +151,19 @@ async def receive_opensearch_webhook(request: Request):
             event_timestamp = (
                 data.get("timestamp") or data.get("period_end") or data.get("alert_time")
             )
+            payload_ips = parse_bucket_keys(
+                data.get("bucket_keys")
+                or data.get("src_ip")
+                or data.get("bucket_key")
+                or data.get("attacker_ip")
+                or data.get("ip")
+            )
+            count_val = data.get("count")
+            if count_val not in (None, ""):
+                try:
+                    payload_count = int(count_val)
+                except (TypeError, ValueError):
+                    payload_count = 1
     except Exception as e:
         logger.warning("Could not parse payload as standard JSON: %s", e)
 
@@ -124,88 +176,65 @@ async def receive_opensearch_webhook(request: Request):
     incident_type = incident_type_map.get(monitor_name, "bruteforce")
 
     incidents_created = []
-    
+
+    # Prefer the live alert buckets (they include the matching document count).
+    candidates = []
     if monitor_name and trigger_name:
-        buckets = fetch_all_active_alert_buckets(monitor_name, trigger_name)
-        
-        if buckets:
-            for bucket in buckets:
-                src_ip = bucket.get("src_ip") or bucket.get("bucket_key")
-                count = bucket.get("count", 1)
-                
-                if not src_ip:
-                    continue
-                    
-                incident = save_or_update_incident(
-                    src_ip=src_ip,
-                    severity=severity,
-                    count=count,
-                    event_timestamp=event_timestamp,
-                    raw_payload=raw_text,
-                    incident_type=incident_type,
-                )
-                incidents_created.append(incident)
-                logger.info(
-                    "Incident recorded: ID=%s, src_ip=%s, severity=%s, count=%s, type=%s",
-                    incident["id"],
-                    incident["src_ip"],
-                    incident["severity"],
-                    incident["count"],
-                    incident.get("incident_type"),
-                )
-        else:
-            src_ip = None
-            count = 1
-            try:
-                data = json.loads(raw_text)
-                if isinstance(data, dict):
-                    src_ip = (
-                        data.get("src_ip")
-                        or data.get("bucket_key")
-                        or data.get("attacker_ip")
-                        or data.get("ip")
-                    )
-                    count_val = data.get("count")
-                    count = int(count_val) if count_val not in (None, "") else 1
-            except Exception:
-                pass
-            
-            if not src_ip:
-                ip_match = re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", raw_text)
-                if ip_match:
-                    src_ip = ip_match.group(0)
-            
-            if not src_ip:
-                src_ip = "unknown"
-            
-            incident = save_or_update_incident(
-                src_ip=src_ip,
-                severity=severity,
-                count=count,
-                event_timestamp=event_timestamp,
-                raw_payload=raw_text,
-                incident_type=incident_type,
-            )
-            incidents_created.append(incident)
-            logger.info(
-                "Incident recorded (fallback): ID=%s, src_ip=%s, severity=%s, count=%s, type=%s",
-                incident["id"],
-                incident["src_ip"],
-                incident["severity"],
-                incident["count"],
-                incident.get("incident_type"),
-            )
-    else:
-        src_ip = "unknown"
+        candidates = fetch_all_active_alert_buckets(monitor_name, trigger_name)
+
+    # Fall back to the bucket keys embedded in the notification template.
+    if not candidates and payload_ips:
+        candidates = [{"src_ip": ip, "count": payload_count} for ip in payload_ips]
+
+    # Last resort: extract an IPv4 address from the raw payload.
+    if not candidates:
+        ip_match = re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", raw_text)
+        if ip_match:
+            candidates = [{"src_ip": ip_match.group(0), "count": payload_count}]
+
+    # Setup/test notifications carry neither a monitor nor an IP. Acknowledge
+    # them without persisting an "unknown" incident.
+    if not candidates:
+        logger.info(
+            "Webhook acknowledged with no incident: monitor=%s trigger=%s",
+            monitor_name,
+            trigger_name,
+        )
+        return {
+            "status": "success",
+            "raw_webhook_id": raw_id,
+            "incidents_created": 0,
+            "incidents": [],
+            "message": "No monitor or source IP found in payload; ignored.",
+        }
+
+    for bucket in candidates:
+        src_ip = bucket.get("src_ip") or bucket.get("bucket_key")
+        if not src_ip:
+            continue
+
+        try:
+            count = int(bucket.get("count") or payload_count)
+        except (TypeError, ValueError):
+            count = payload_count
+
         incident = save_or_update_incident(
             src_ip=src_ip,
             severity=severity,
-            count=1,
+            count=count,
             event_timestamp=event_timestamp,
             raw_payload=raw_text,
             incident_type=incident_type,
         )
         incidents_created.append(incident)
+        logger.info(
+            "Incident recorded: ID=%s, src_ip=%s, severity=%s, count=%s, type=%s",
+            incident["id"],
+            incident["src_ip"],
+            incident["severity"],
+            incident["count"],
+            incident.get("incident_type"),
+        )
 
     return {
         "status": "success",

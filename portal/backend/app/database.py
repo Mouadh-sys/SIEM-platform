@@ -13,6 +13,13 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def _ensure_column(cursor: sqlite3.Cursor, table: str, column: str, definition: str):
+    """Add a column to an existing table when an older database is missing it."""
+    columns = {row[1] for row in cursor.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
+
+
 def init_db():
     conn = get_connection()
     cursor = conn.cursor()
@@ -47,6 +54,14 @@ def init_db():
             created_at TEXT NOT NULL
         );
     """)
+
+    # Migrate databases created before incident_type was introduced.
+    _ensure_column(cursor, "incidents", "incident_type", "incident_type TEXT NOT NULL DEFAULT 'bruteforce'")
+    cursor.execute(
+        "UPDATE incidents SET incident_type = 'bruteforce' "
+        "WHERE incident_type IS NULL OR incident_type = ''"
+    )
+
     # Seed IOCs
     seed_iocs = [
         ("203.0.113.42", "simulated feed", 1, '{"description": "Simulated brute-force attacker"}'),
@@ -100,7 +115,9 @@ def save_or_update_incident(src_ip: str, severity: int, count: int = 1, event_ti
 
         diff_seconds = (now - last_dt).total_seconds()
         if 0 <= diff_seconds <= 600:
-            new_count = row["count"] + count
+            # Alert notifications repeat while a bucket stays active. Keep the
+            # high-water mark instead of adding the same bucket count again.
+            new_count = max(row["count"], count)
             cursor.execute(
                 """
                 UPDATE incidents

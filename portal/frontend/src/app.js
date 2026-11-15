@@ -5,7 +5,6 @@
 ──────────────────────────────────────────────────────────── */
 
 const API = `${location.protocol}//${location.hostname}:8000`;
-const OS  = `${location.protocol}//${location.hostname}:9200`;
 
 let allIncidents  = [];
 let currentFilter = 'all';
@@ -177,10 +176,10 @@ async function renderRecentWebhooks() {
   } catch { /* silent */ }
 }
 
-// ── Fetch OpenSearch doc count ───────────────────────────────
+// ── Fetch OpenSearch doc count (through the backend proxy) ───
 async function fetchDocCount() {
   try {
-    const r = await fetch(`${OS}/security-logs/_count`);
+    const r = await fetch(`${API}/api/opensearch/security-logs/_count`);
     if (!r.ok) return null;
     const d = await r.json();
     return d.count ?? null;

@@ -71,13 +71,15 @@ flowchart LR
 
 All services join the `siem-net` bridge network, so containers address each other by service name (`opensearch`, `kafka`, `portal-backend`, …).
 
+A one-shot `index-init` service runs `scripts/create_index_template.sh` after OpenSearch is healthy. It applies `security-logs-template`, creates `security-logs` when missing, and repairs an index whose mapping or replica count does not match the template. Data Prepper starts only after `index-init` exits successfully, so the first document can never create an index with dynamic mappings.
+
 `architecture.md` contains additional design notes and a target production architecture (multi-broker Kafka, OpenSearch cluster, PostgreSQL, Vault, Prometheus/Grafana). Those components are **not** part of the current compose stack.
 
 ---
 
 ## Detection rules
 
-`scripts/setup_detector.py` idempotently creates one notification channel and three monitors. All monitors run every minute against `security-logs`.
+`scripts/setup_detector.py` idempotently creates one notification channel and three monitors. Each run first deletes duplicate monitors with the same name, then updates the survivor, so the three monitors shown below are the only ones registered. All monitors run every minute against `security-logs`.
 
 | Monitor | Incident type | Window | Grouping | Trigger condition |
 | --- | --- | --- | --- | --- |
@@ -90,8 +92,10 @@ Alert notifications are sent to the OpenSearch Notifications webhook channel `si
 Incident handling behaviour:
 
 - The webhook handler queries OpenSearch for all `ACTIVE` alerts matching the monitor and trigger, then records one incident per bucket key.
-- If the alert-bucket lookup fails, it falls back to extracting `src_ip`/`count` from the payload, then to the first IPv4 address in the raw body.
-- An existing incident for the same `src_ip` and `incident_type` is updated (count accumulated) when its `last_seen` is within the last 10 minutes; otherwise a new incident is created.
+- If the alert-bucket lookup fails, it falls back to the bucket keys embedded in the notification payload, then to the first IPv4 address in the raw body.
+- Notifications with neither a monitor nor a source IP (for example the channel test message) are stored in `raw_webhooks` and acknowledged without creating an incident.
+- An existing incident for the same `src_ip` and `incident_type` is updated when its `last_seen` is within the last 10 minutes; otherwise a new incident is created.
+- The incident `count` is the high-water mark of the alert bucket's document count (`max(stored, current)`), not a sum, so repeated notifications for a still-active bucket do not inflate it.
 - Severity values follow the UI convention: `1` Critical, `2` High, `3` Medium, `4` Low.
 
 ---
@@ -156,7 +160,7 @@ At minimum, review the pinned versions and host ports. Docker Compose loads `.en
 make up
 ```
 
-This runs `docker compose up -d`, waits for OpenSearch, Kafka, Data Prepper and the portal backend to report healthy, creates the `security-logs` index template and index, and registers the notification channel and monitors.
+This runs `docker compose up -d`; the `index-init` service applies the `security-logs` template and index, Data Prepper waits for it before consuming Kafka, and `scripts/bootstrap.sh` waits for OpenSearch, Kafka, Data Prepper and the portal backend to report healthy before registering the notification channel and monitors.
 
 ### 3. Generate activity
 
@@ -335,7 +339,7 @@ After the Lua normaliser, documents contain:
 | `message` | text | Original raw log line (also has a `.keyword` subfield). |
 | `doc_id` | keyword | SHA-256 of the raw message, used as the OpenSearch document ID. |
 
-The index template `security-logs-template` maps these fields for `security-logs*` with 1 shard and 0 replicas. It is created by `scripts/create_index_template.sh`.
+The index template `security-logs-template` maps these fields for `security-logs*` with 1 shard and 0 replicas. It is applied by the `index-init` Compose service, which runs `scripts/create_index_template.sh` before Data Prepper starts.
 
 ---
 
@@ -388,7 +392,7 @@ Notes:
 ├── scripts/
 │   ├── attack_hydra.sh           # optional Hydra helper
 │   ├── bootstrap.sh              # up + health waits + template + detector
-│   ├── create_index_template.sh  # index template and index creation
+│   ├── create_index_template.sh  # template + index validation/creation (index-init)
 │   ├── replay_auth_log.py        # synthetic SSH log generator
 │   ├── seed_incidents.py         # 30 synthetic incidents
 │   └── setup_detector.py         # channel + 3 Alerting monitors
@@ -445,7 +449,7 @@ Expected results:
 - OpenSearch cluster status is `green` or `yellow` with one node.
 - The `security-logs` index exists and grows after each replay.
 - The channel `siem-portal-webhook` and the three monitors are present.
-- `make demo` produces a `bruteforce` incident for each attacker IP.
+- `make demo` produces a `bruteforce` incident for each attacker IP. The spraying monitor can also fire, because the demo reuses several distinct usernames per source.
 - `/api/ioc/203.0.113.42` returns `malicious: true` with source `simulated feed`.
 
 ---
@@ -463,7 +467,7 @@ A dependency-free static dashboard served by nginx at <http://localhost:5173>. I
 - Top attackers and recent webhook payloads.
 - A UTC clock and backend connectivity indicator.
 
-It calls the backend at `http://<host>:8000` directly and reads the OpenSearch document count from `http://<host>:9200`. The nginx config also exposes an `/api/*` proxy to the backend.
+It calls the backend at `http://<host>:8000` directly, including the OpenSearch document count through `/api/opensearch/security-logs/_count`. Routing that query through the proxy avoids browser CORS restrictions on port `9200`. The nginx config also exposes an `/api/*` proxy to the backend.
 
 ### Optional React dashboard (`portal/frontend-vite`)
 
@@ -512,9 +516,13 @@ The compose service uses the prebuilt `siem-portal-backend:latest` image. Build 
 
 Fluent Bit has no tail offset database by design, so it re-reads `auth.log`. Data Prepper uses the `doc_id` field as the OpenSearch document ID, so replayed lines overwrite the same document rather than duplicating it.
 
-**A webhook arrives but the incident has IP `unknown`**
+**A webhook arrives but no incident is created**
 
-The monitor message template must include `src_ip`. If the payload is malformed, the backend falls back to the first IPv4 address in the raw body, then to `unknown`. Inspect the stored payloads at `/webhook/raw`.
+Payloads with neither a monitor name nor a source IP (for example the channel test message) are intentionally ignored. Inspect the stored payloads at `/webhook/raw`; a real alert should contain `monitor_name` and at least one bucket key.
+
+**Alerts fire but OpenSearch logs `Error collecting inputs` / `value must not be null`**
+
+Bucket-level trigger `buckets_path` values must be relative to `parent_bucket_path` (for example `failed._count`, not `by_ip>failed>_count`). Re-run `python3 scripts/setup_detector.py` after changing monitor definitions.
 
 **`make seed` removed my incidents**
 

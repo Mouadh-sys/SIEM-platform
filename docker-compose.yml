@@ -80,6 +80,22 @@ services:
       retries: 15
       start_period: 20s
 
+  index-init:
+    image: opensearchproject/opensearch:${OPENSEARCH_VERSION}
+    container_name: siem-index-init
+    entrypoint: ["/bin/bash", "/scripts/create_index_template.sh"]
+    environment:
+      - OPENSEARCH_URL=http://opensearch:9200
+      - RECREATE_MISMATCHED_INDEX=true
+    volumes:
+      - ./scripts/create_index_template.sh:/scripts/create_index_template.sh:ro
+    networks:
+      - siem-net
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    restart: "no"
+
   fluent-bit:
     image: cr.fluentbit.io/fluent/fluent-bit:${FLUENT_BIT_VERSION}
     container_name: siem-fluent-bit
@@ -106,6 +122,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      index-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "curl -sf -k -u admin:admin https://localhost:4900/list || exit 1"]
       interval: 10s
